@@ -1,0 +1,25 @@
+{
+  "id": "nextcloud",
+  "name": "Nextcloud",
+  "description": "Nextcloud WebDAV 文件工具：上传、文本写入、下载、列目录、创建分享链接、删除。",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["baseUrl", "username", "appPassword"],
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "Nextcloud 站点根 URL，例如 https://cloud.example.com"
+      },
+      "username": {
+        "type": "string",
+        "description": "Nextcloud 登录用户名"
+      },
+      "appPassword": {
+        "type": "string",
+        "description": "应用专用密码（或具备 WebDAV/OCS 权限的令牌）"
+      }
+    }
+  }
+}

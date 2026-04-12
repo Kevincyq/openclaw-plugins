@@ -1,0 +1,25 @@
+{
+  "id": "pkb",
+  "name": "PKB",
+  "description": "PKB 知识库工具：上传索引、问答检索、删除资源，并返回带溯源链接的结果。",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["baseUrl", "apiKey", "userId"],
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "PKB backend 服务地址"
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "PKB API Key"
+      },
+      "userId": {
+        "type": "string",
+        "description": "PKB user id / provider user id"
+      }
+    }
+  }
+}

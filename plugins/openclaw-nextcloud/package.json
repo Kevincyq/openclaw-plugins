@@ -1,0 +1,22 @@
+{
+  "name": "@kevincyq/openclaw-nextcloud",
+  "version": "0.1.0",
+  "description": "OpenClaw 插件：Nextcloud WebDAV 文件工具（上传/写文本/下载/列表/分享/删除），底层调用 scripts/api.py",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "openclaw": "2026.4.5",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.4.5",
+      "minGatewayVersion": "2026.4.5"
+    },
+    "build": {
+      "openclawVersion": "2026.4.5",
+      "pluginSdkVersion": "2026.4.5"
+    }
+  }
+}

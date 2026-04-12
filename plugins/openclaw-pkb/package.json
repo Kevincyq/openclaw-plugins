@@ -1,0 +1,21 @@
+{
+    "name": "@kevincyq/openclaw-pkb",
+    "version": "0.1.0",
+    "type": "module",
+    "private": true,
+    "dependencies": {
+      "openclaw": "2026.4.5",
+      "@sinclair/typebox": "^0.34.0"
+    },
+    "openclaw": {
+      "extensions": ["./index.ts"],
+      "compat": {
+        "pluginApi": ">=2026.4.5",
+        "minGatewayVersion": "2026.4.5"
+      },
+      "build": {
+        "openclawVersion": "2026.4.5",
+        "pluginSdkVersion": "2026.4.5"
+      }
+    }
+  }

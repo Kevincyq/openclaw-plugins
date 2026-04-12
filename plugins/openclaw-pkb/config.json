@@ -1,0 +1,28 @@
+{
+  "nextcloud": {
+    "baseUrl": "https://nextcloud.kmchat.cloud",
+    "username": "kevincyq",
+    "appPassword": "DbNm6-BMWJ5-696Ng-xEk3d-5J9NE"
+  },
+  "pkb": {
+    "baseUrl": "https://tct-pkb-api-t.tcljd.com",
+    "apiKey": "sk-ePsiU5MFBXtfdqj6fhSuMymOX1tUeKEgVezc6PHqEBU",
+    "userId": "kevincyq@gmail.com"
+  },
+  "fileSaaS": {
+    "appId": "tct-pkb-api",
+    "appSecret": "AqxR2B^Tn1.sJNF5U&tdaeDQ^nWRcdUE",
+    "tenantId": "tct-pkb",
+    "uploadServer": "file-qcl-upload.test.leiniao.com"
+  },
+  "sync": {
+    "sourceFolder": "/PKB/",
+    "intervalMinutes": 30,
+    "excludePatterns": [
+      "*.tmp",
+      "*.log",
+      ".DS_Store",
+      "~*"
+    ]
+  }
+}
