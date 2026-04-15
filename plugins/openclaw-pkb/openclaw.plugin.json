@@ -19,6 +19,37 @@
       "userId": {
         "type": "string",
         "description": "PKB user id / provider user id"
+      },
+      "fileSaaS": {
+        "type": "object",
+        "description": "可选的 FileSaaS 上传配置，供上传文件到 PKB 时使用。",
+        "additionalProperties": false,
+        "properties": {
+          "appId": {
+            "type": "string",
+            "description": "FileSaaS appId"
+          },
+          "appSecret": {
+            "type": "string",
+            "description": "FileSaaS appSecret"
+          },
+          "tenant": {
+            "type": "string",
+            "description": "FileSaaS tenant"
+          },
+          "tenantId": {
+            "type": "string",
+            "description": "FileSaaS tenantId（tenant 的别名）"
+          },
+          "server": {
+            "type": "string",
+            "description": "FileSaaS 上传服务主机名"
+          },
+          "uploadServer": {
+            "type": "string",
+            "description": "FileSaaS 上传服务主机名（server 的别名）"
+          }
+        }
       }
     }
   }
