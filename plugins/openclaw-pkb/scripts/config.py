@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-PKB 知识库配置管理
-支持从环境变量或 .env 文件加载配置
+PKB 侧「本地/CLI」配置加载（scripts/main.py、get_api() 使用）。
+
+说明：OpenClaw 插件走 openclaw_bridge 时，PKB 的 baseUrl/apiKey/userId 主要来自
+index.ts 传入的 JSON；但 FileSaaS 与可选 .env 仍由 api._ensure_env_loaded /
+_filesaas_settings 与 PKBConfig._load_from_env_file 配合读取。
+
+_load_from_env_file 会按顺序找：当前工作目录、插件根目录（推荐放 openclaw-pkb/.env）、用户家目录的 .env。
 """
 
 import os
@@ -35,11 +40,11 @@ class PKBConfig:
         if not api_key or not user_id:
             raise ValueError("PKB 配置未设置，请设置 PKB_API_KEY 和 PKB_USER_ID 环境变量")
         
-        # Nextcloud 配置（复用）
+        # Nextcloud 配置（CLI sync 等复用）
         nextcloud_base_url = os.getenv("NEXTCLOUD_BASE_URL", "https://nextcloud.kmchat.cloud")
         nextcloud_username = os.getenv("NEXTCLOUD_USERNAME", "")
         nextcloud_app_password = os.getenv("NEXTCLOUD_APP_PASSWORD", "")
-        
+
         return cls(
             base_url=base_url,
             api_key=api_key,

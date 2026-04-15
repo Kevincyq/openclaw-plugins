@@ -1,0 +1,23 @@
+{
+  "nextcloud": {
+    "baseUrl": "https://nextcloud.example.com",
+    "username": "",
+    "appPassword": ""
+  },
+  "pkb": {
+    "baseUrl": "https://pkb-api.example.com",
+    "apiKey": "",
+    "userId": ""
+  },
+  "fileSaaS": {
+    "appId": "",
+    "appSecret": "",
+    "tenantId": "",
+    "uploadServer": ""
+  },
+  "sync": {
+    "sourceFolder": "/PKB/",
+    "intervalMinutes": 30,
+    "excludePatterns": ["*.tmp", "*.log", ".DS_Store", "~*"]
+  }
+}

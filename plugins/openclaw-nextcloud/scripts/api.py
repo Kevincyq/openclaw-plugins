@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-Nextcloud API 封装
-提供文件上传、下载、分享等操作
+Nextcloud 网盘 API（WebDAV + OCS 分享）
+
+路径模型：remote.php/dav/files/{username}/{quote(utf8_path)}，与 openclaw-pkb 里资源名对齐时请用
+同一套 normalize_nextcloud_path（本文件与 pkb 各有一份副本，语义保持一致）。
+
+主要方法：upload(PUT)、download(GET)、write_text(PUT)、delete(DELETE)、list(PROPFIND)、
+share/create_share_link(OCS POST)、get_share_link(OCS GET)。
 """
 
 import os
@@ -9,6 +14,10 @@ import requests
 from typing import Optional, List, Dict, Tuple
 from urllib.parse import quote, unquote
 import xml.etree.ElementTree as ET
+
+# (connect, read) 秒；大文件上传放宽读超时
+_NC_HTTP_TIMEOUT = (15, 120)
+_NC_UPLOAD_TIMEOUT = (15, 600)
 
 
 def normalize_nextcloud_path(path: str) -> str:
@@ -53,8 +62,11 @@ def normalize_nextcloud_path(path: str) -> str:
 
 
 class NextcloudAPI:
-    """Nextcloud WebDAV API 封装"""
-    
+    """
+    使用应用专用密码（app_password）做 HTTP Basic，访问用户文件空间。
+    OCS-APIREQUEST 头为 Nextcloud 对分享等接口的常规要求。
+    """
+
     def __init__(self, base_url: str, username: str, app_password: str):
         self.base_url = base_url.rstrip("/")
         self.username = username
@@ -74,9 +86,12 @@ class NextcloudAPI:
         """列出目录下的文件"""
         path = normalize_nextcloud_path(path)
         url = self._dav_url(path)
-        response = self.session.request("PROPFIND", url, headers={
-            "Depth": "1"
-        })
+        response = self.session.request(
+            "PROPFIND",
+            url,
+            headers={"Depth": "1"},
+            timeout=_NC_HTTP_TIMEOUT,
+        )
         response.raise_for_status()
         
         files = []
@@ -118,8 +133,8 @@ class NextcloudAPI:
         url = self._dav_url(remote_path)
         file_name = os.path.basename(remote_path.lstrip("/"))
         
-        with open(local_path, 'rb') as f:
-            response = self.session.put(url, data=f)
+        with open(local_path, "rb") as f:
+            response = self.session.put(url, data=f, timeout=_NC_UPLOAD_TIMEOUT)
         
         if response.status_code not in (201, 204):
             raise Exception(f"上传失败: {response.status_code} - {response.text}")
@@ -136,10 +151,10 @@ class NextcloudAPI:
         """下载文件"""
         remote_path = normalize_nextcloud_path(remote_path)
         url = self._dav_url(remote_path)
-        response = self.session.get(url)
+        response = self.session.get(url, timeout=_NC_UPLOAD_TIMEOUT)
         response.raise_for_status()
-        
-        with open(local_path, 'wb') as f:
+
+        with open(local_path, "wb") as f:
             f.write(response.content)
         return True
 
@@ -149,7 +164,7 @@ class NextcloudAPI:
         url = self._dav_url(remote_path)
         file_name = os.path.basename(remote_path.lstrip("/"))
 
-        response = self.session.put(url, data=text.encode("utf-8"))
+        response = self.session.put(url, data=text.encode("utf-8"), timeout=_NC_HTTP_TIMEOUT)
         if response.status_code not in (201, 204):
             raise Exception(f"写入失败: {response.status_code} - {response.text}")
 
@@ -169,7 +184,7 @@ class NextcloudAPI:
         url = self._dav_url(remote_path)
         file_name = os.path.basename(remote_path.lstrip("/"))
         
-        response = self.session.delete(url)
+        response = self.session.delete(url, timeout=_NC_HTTP_TIMEOUT)
         response.raise_for_status()
         
         result = {
@@ -189,7 +204,7 @@ class NextcloudAPI:
             "shareType": 3  # 公开链接
         }
         
-        response = self.session.post(url, json=data)
+        response = self.session.post(url, json=data, timeout=_NC_HTTP_TIMEOUT)
         response.raise_for_status()
         
         # 解析返回的分享链接 - 不使用命名空间
@@ -205,14 +220,14 @@ class NextcloudAPI:
         """获取已存在的分享链接"""
         path = normalize_nextcloud_path(path)
         url = f"{self.base_url}/ocs/v2.php/apps/files_sharing/api/v1/shares?path={quote(path)}&share_type=3"
-        response = self.session.get(url)
-        
+        response = self.session.get(url, timeout=_NC_HTTP_TIMEOUT)
+
         if response.status_code != 200:
             return None
-        
+
         root = ET.fromstring(response.content)
-        url_elem = root.find('.//url')
-        
+        url_elem = root.find(".//url")
+
         if url_elem is not None:
             return url_elem.text
         return None

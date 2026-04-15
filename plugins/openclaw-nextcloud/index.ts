@@ -1,3 +1,14 @@
+/**
+ * openclaw-nextcloud 插件（TypeScript 入口）
+ *
+ * 数据流：Agent 调工具 → registerTool → runBridge → scripts/openclaw_bridge.py
+ *        → NextcloudAPI（api.py）用 WebDAV/OCS 访问网盘「文件真源」。
+ *
+ * 与 openclaw-pkb 的关系：Nextcloud 管存储路径；PKB 管检索索引。入库流水线见 skills/file-ingest-pipeline。
+ *
+ * 配置：OpenClaw 注入为 api.pluginConfig（同 plugins.entries.nextcloud.config），
+ * 勿使用 api.config（那是整份 openclaw.json）。
+ */
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { Type } from "@sinclair/typebox";
 import { spawn } from "node:child_process";
@@ -16,6 +27,10 @@ function bridgeScriptPath(): string {
   return path.join(__dirname, "scripts", "openclaw_bridge.py");
 }
 
+/**
+ * 执行 Python 桥：argv[1] 为整段 JSON，成功时 stdout 一行 JSON。
+ * 失败时 Python 仍可能把错误写在 stdout（exit≠0），故需同时解析 stdout 与 stderr（与 pkb 插件一致）。
+ */
 function runBridge(payload: Record<string, unknown>) {
   return new Promise<unknown>((resolve, reject) => {
     const p = spawn("python3", [bridgeScriptPath(), JSON.stringify(payload)], {
@@ -34,28 +49,41 @@ function runBridge(payload: Record<string, unknown>) {
 
     p.on("close", (code) => {
       const trimmed = stdout.trim();
-      if (code !== 0) {
-        reject(new Error(stderr || `python exited with code ${code}`));
+      let parsed: { ok?: boolean; error?: string; result?: unknown } | null = null;
+      if (trimmed) {
+        try {
+          parsed = JSON.parse(trimmed) as { ok?: boolean; error?: string; result?: unknown };
+        } catch {
+          parsed = null;
+        }
+      }
+      if (parsed?.ok === false) {
+        reject(new Error(parsed.error || "bridge error"));
         return;
       }
-      try {
-        const parsed = JSON.parse(trimmed) as { ok?: boolean; error?: string; result?: unknown };
-        if (parsed?.ok === false) {
-          reject(new Error(parsed.error || "bridge error"));
-          return;
-        }
-        resolve("result" in parsed && parsed.result !== undefined ? parsed.result : parsed);
-      } catch (e) {
-        reject(
-          new Error(
-            `invalid JSON from bridge: ${e instanceof Error ? e.message : String(e)}; stdout=${trimmed.slice(0, 500)}`
-          )
-        );
+      if (code !== 0) {
+        const fromJson =
+          parsed && typeof parsed === "object" && "error" in parsed
+            ? String((parsed as { error?: string }).error || "")
+            : "";
+        const detail =
+          fromJson ||
+          stderr.trim() ||
+          (trimmed ? `stdout: ${trimmed.slice(0, 1200)}` : "") ||
+          `python exited with code ${code ?? "null"}`;
+        reject(new Error(detail));
+        return;
       }
+      if (!parsed) {
+        reject(new Error(`invalid JSON from bridge: stdout=${trimmed.slice(0, 500)}`));
+        return;
+      }
+      resolve("result" in parsed && parsed.result !== undefined ? parsed.result : parsed);
     });
   });
 }
 
+/** WebDAV/OCS 共用的 Nextcloud 连接信息（应用密码，非登录网页密码）。 */
 function basePayload(cfg: NextcloudConfig, action: string) {
   return {
     action,
@@ -70,7 +98,9 @@ export default definePluginEntry({
   name: "Nextcloud",
   description: "Nextcloud WebDAV：上传、文本写入、下载、列目录、分享链接、删除。",
   register(api) {
-    const cfg = api.config as NextcloudConfig;
+    const cfg = (api.pluginConfig ??
+      api.config.plugins?.entries?.nextcloud?.config ??
+      {}) as NextcloudConfig;
 
     api.registerTool({
       name: "nextcloud_upload_file",

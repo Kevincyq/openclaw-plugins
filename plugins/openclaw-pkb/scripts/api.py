@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
-PKB 知识库 API 封装
-提供问答、同步、查询等操作。
+PKB 知识库 HTTP 客户端（与 openclaw-nextcloud 的 api 相互独立）。
+
+模块分层（阅读顺序）：
+  1) 文件顶部：超时常量、环境加载、FileSaaS 配置解析（与 PKB_API_KEY 不同套凭证）；
+  2) normalize_nextcloud_path：与 nextcloud 插件同语义，保证 PKB 资源名与网盘路径一致；
+  3) PKBAPI：
+       - 会话/问答 ask（SSE）；
+       - 资源上传 upload_resource：FileSaaS 拿 file_key → PKB 登记 file_saas；
+       - sync_file：删旧索引再 upload，供桥「更新」语义；
+       - delete / list / wait_resource_indexed：维护与流水线等待。
+
+被谁调用：openclaw_bridge.py（插件）、main.py（CLI）、get_api()（依赖 config.py）。
 """
 
 from __future__ import annotations
@@ -10,9 +20,84 @@ import base64
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
+
+# (connect_timeout, read_timeout) 秒
+_HTTP_TIMEOUT = (15, 120)
+_HTTP_STREAM_TIMEOUT = (20, 300)
+_FILESAAS_UPLOAD_TIMEOUT = (15, 600)
+_PKB_RESOURCE_POST_TIMEOUT = (15, 120)
+
+
+def _ensure_env_loaded() -> None:
+    """加载插件根目录 .env，使 FILESAAS_* 等在子进程中可用。"""
+    from config import PKBConfig
+
+    PKBConfig._load_from_env_file()
+
+
+def _apply_filesaas_from_plugin_config_json() -> None:
+    """
+    若 FILESAAS_* 仍未设置，从插件根目录 config.json 的 fileSaaS 块写入 os.environ。
+
+    与仓库内 config.json 字段对齐：appId、appSecret、tenantId（或 tenant）、uploadServer（或 server）。
+    已存在的环境变量不被覆盖（便于 .env / 系统环境优先）。
+    """
+    cfg_path = Path(__file__).resolve().parent.parent / "config.json"
+    if not cfg_path.is_file():
+        return
+    try:
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return
+    fs = raw.get("fileSaaS") or raw.get("file_saas")
+    if not isinstance(fs, dict):
+        return
+    tenant = fs.get("tenant") or fs.get("tenantId")
+    server = fs.get("server") or fs.get("uploadServer")
+    pairs = [
+        ("FILESAAS_APP_ID", fs.get("appId")),
+        ("FILESAAS_APP_SECRET", fs.get("appSecret")),
+        ("FILESAAS_TENANT", tenant),
+        ("FILESAAS_SERVER", server),
+    ]
+    for key, val in pairs:
+        if val is None or val == "":
+            continue
+        s = str(val).strip()
+        if not s:
+            continue
+        if not os.environ.get(key):
+            os.environ[key] = s
+
+
+def _filesaas_settings() -> tuple[str, str, str, str]:
+    """
+    FileSaaS 与 PKB API（PKB_BASE_URL / PKB_API_KEY）是两套凭证，见 upload_resource 注释。
+
+    优先级：已设置的环境变量 > 插件目录 .env > 插件目录 config.json 的 fileSaaS。
+    """
+    _ensure_env_loaded()
+    _apply_filesaas_from_plugin_config_json()
+    app_id = os.getenv("FILESAAS_APP_ID", "tct-pkb-api").strip()
+    secret = os.getenv("FILESAAS_APP_SECRET", "").strip()
+    tenant = os.getenv("FILESAAS_TENANT", "tct-pkb").strip()
+    server = os.getenv("FILESAAS_SERVER", "").strip()
+    if not secret:
+        raise ValueError(
+            "缺少 FileSaaS 配置：需要 FILESAAS_APP_SECRET。"
+            "可在 openclaw-pkb/.env、插件根目录 config.json 的 fileSaaS.appSecret，"
+            "或 OpenClaw 的 plugins.entries.pkb.config.fileSaaS.appSecret 中设置。"
+        )
+    if not server:
+        raise ValueError(
+            "缺少 FileSaaS 配置：需要 FILESAAS_SERVER（上传服务主机名，不含 https://）。"
+            "可在 .env、config.json 的 fileSaaS.uploadServer，或 pkb.config.fileSaaS.server 中设置。"
+        )
+    return app_id, secret, tenant, server
 
 
 def normalize_nextcloud_path(path: str) -> str:
@@ -57,17 +142,22 @@ def normalize_nextcloud_path(path: str) -> str:
 
 
 class PKBAPI:
-    """PKB 知识库 API 封装"""
-    
+    """
+    PKB 后端会话：默认请求头带 Bearer(api_key) 与 X-PROVIDER-USER-ID(user_id)。
+
+    provider_resource_id：问答溯源用，内嵌 base64(JSON) 保存 path + Nextcloud 公开 url（若有）。
+    """
+
     def __init__(self, base_url: str, api_key: str, user_id: str):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.user_id = user_id
         self.session = requests.Session()
+        # 勿在 Session 层写死 Content-Type：GET（如 list_resources）带 application/json
+        # 时，部分网关会返回 400；POST 使用 requests.post(..., json=...) 会自动带 JSON 类型。
         self.session.headers.update({
             "Authorization": f"Bearer {api_key}",
             "X-PROVIDER-USER-ID": user_id,
-            "Content-Type": "application/json"
         })
     
     def create_chat_session(self) -> str:
@@ -75,7 +165,7 @@ class PKBAPI:
         url = f"{self.base_url}/api/v1/tct-knowledge-base/chat-sessions"
         data = {"title": None}
         
-        response = self.session.post(url, json=data)
+        response = self.session.post(url, json=data, timeout=_HTTP_TIMEOUT)
         response.raise_for_status()
         
         session_id = response.json()["data"]["id"]
@@ -168,7 +258,7 @@ class PKBAPI:
         citations = []
         
         # 使用流式请求
-        response = self.session.post(url, json=data, stream=True)
+        response = self.session.post(url, json=data, stream=True, timeout=_HTTP_STREAM_TIMEOUT)
         response.raise_for_status()
         
         for line in response.iter_lines():
@@ -208,8 +298,12 @@ class PKBAPI:
     
     def upload_resource(self, file_path: str, resource_name: str, source_url: str = "") -> bool:
         """
-        上传文件到知识库
-        使用两步：1) FileSaaS 2) PKB
+        上传文件到知识库：两段链路，与 PKB 登录凭证无关。
+
+        1) 字节流 POST 到 FileSaaS（HMAC 签名，FILESAAS_*），得到 file_key；
+        2) 再 POST PKB API（Bearer PKB_API_KEY），payload 内携带 file_saas.file_key。
+
+        因此仅有 PKB_BASE_URL / PKB_API_KEY / PKB_USER_ID 无法完成第 1 步，必须另有 FileSaaS 配置。
         """
         import hmac
         import hashlib
@@ -217,109 +311,109 @@ class PKBAPI:
         import uuid
         import time
         import mimetypes
-        
+
         resource_name = self._normalize_resource_name(resource_name)
 
-        # FileSaaS 配置
-        FILESAAS_APP_ID = "tct-pkb-api"
-        FILESAAS_APP_SECRET = "AqxR2B^Tn1.sJNF5U&tdaeDQ^nWRcdUE"
-        FILESAAS_TENANT = "tct-pkb"
-        FILESAAS_SERVER = "file-qcl-upload.test.leiniao.com"
-        
+        fs_app_id, fs_secret, fs_tenant, fs_server = _filesaas_settings()
+
         # 1. 上传到 FileSaaS
         timestamp = str(int(time.time()))
         nonce = str(uuid.uuid4()).replace("-", "")[:32]
         method = "POST"
-        path = f"/upload/{FILESAAS_TENANT}"
-        
-        canonical_headers = f"xtcl-algorithm:tcl2-hmac-sha256;xtcl-app:file-saas;xtcl-appid:{FILESAAS_APP_ID};xtcl-nonce:{nonce};xtcl-timestamp:{timestamp};"
-        
-        canonical_request = f"{method}\n{path}\n\n{canonical_headers}\n"
-        
+        upload_path = f"/upload/{fs_tenant}"
+
+        canonical_headers = (
+            f"xtcl-algorithm:tcl2-hmac-sha256;xtcl-app:file-saas;xtcl-appid:{fs_app_id};"
+            f"xtcl-nonce:{nonce};xtcl-timestamp:{timestamp};"
+        )
+
+        canonical_request = f"{method}\n{upload_path}\n\n{canonical_headers}\n"
+
         signature = base64.b64encode(
-            hmac.new(FILESAAS_APP_SECRET.encode(), canonical_request.encode(), hashlib.sha256).digest()
+            hmac.new(fs_secret.encode(), canonical_request.encode(), hashlib.sha256).digest()
         ).decode()
-        
-        url = f"https://{FILESAAS_SERVER}{path}"
+
+        url = f"https://{fs_server}{upload_path}"
         headers = {
             "xtcl-timestamp": timestamp,
             "xtcl-app": "file-saas",
             "xtcl-nonce": nonce,
-            "xtcl-appid": FILESAAS_APP_ID,
+            "xtcl-appid": fs_app_id,
             "xtcl-algorithm": "tcl2-hmac-sha256",
-            "xtcl-signature": signature
+            "xtcl-signature": signature,
         }
-        
-        # 确定 MIME 类型
+
         mime_type, _ = mimetypes.guess_type(file_path)
         mime_type = mime_type or "application/octet-stream"
         upload_name = os.path.basename(resource_name) or resource_name
-        
-        with open(file_path, 'rb') as f:
-            files = {'file': (upload_name, f, mime_type)}
-            response = requests.post(url, files=files, headers=headers, timeout=60)
-        
+
+        with open(file_path, "rb") as f:
+            files = {"file": (upload_name, f, mime_type)}
+            response = requests.post(
+                url, files=files, headers=headers, timeout=_FILESAAS_UPLOAD_TIMEOUT
+            )
+
         if response.status_code != 200:
-            raise Exception(f"FileSaaS 上传失败: {response.status_code}")
-        
+            raise Exception(f"FileSaaS 上传失败: {response.status_code} - {response.text[:500]}")
+
         data = response.json()
         file_key = data.get("data", {}).get("fileKey", "")
-        
+
         if not file_key:
-            raise Exception(f"FileSaaS 未返回 file_key")
-        
+            raise Exception("FileSaaS 未返回 file_key")
+
         # 2. 创建 PKB 资源
-        # 判断文件类型
-        ext = resource_name.split('.')[-1].lower()
-        is_image = ext in ['jpg', 'jpeg', 'png', 'gif', 'webp']
+        ext = resource_name.split(".")[-1].lower()
+        is_image = ext in ["jpg", "jpeg", "png", "gif", "webp"]
         provider_resource_id = self._build_provider_resource_id(resource_name, source_url)
-        
+
         if is_image:
             api_url = f"{self.base_url}/api/v1/tct-knowledge-base/resources/images"
             payload = {
                 "provider_resource_id": provider_resource_id,
                 "name": resource_name,
-                "file_saas": {
-                    "file_key": file_key,
-                    "tenant_id": "tct-pkb"
-                },
-                "user_language": "zh-CN"
+                "file_saas": {"file_key": file_key, "tenant_id": fs_tenant},
+                "user_language": "zh-CN",
             }
         else:
             api_url = f"{self.base_url}/api/v1/tct-knowledge-base/resources/files"
-            # 确定资源类型
-            if ext == 'pdf':
-                resource_type = 'pdf'
-            elif ext in ['md', 'markdown']:
-                resource_type = 'markdown'
+            if ext == "pdf":
+                resource_type = "pdf"
+            elif ext in ["md", "markdown"]:
+                resource_type = "markdown"
             else:
-                resource_type = 'text'
-            
+                resource_type = "text"
+
             payload = {
                 "provider_resource_id": provider_resource_id,
                 "name": resource_name,
                 "file_resource_type": resource_type,
-                "file_saas": {
-                    "file_key": file_key,
-                    "tenant_id": "tct-pkb"
-                },
-                "user_language": "zh-CN"
+                "file_saas": {"file_key": file_key, "tenant_id": fs_tenant},
+                "user_language": "zh-CN",
             }
-        
-        response = requests.post(api_url, json=payload, headers={
-            "Authorization": f"Bearer {self.api_key}",
-            "X-PROVIDER-USER-ID": self.user_id,
-            "Content-Type": "application/json"
-        })
-        
+
+        response = requests.post(
+            api_url,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "X-PROVIDER-USER-ID": self.user_id,
+                "Content-Type": "application/json",
+            },
+            timeout=_PKB_RESOURCE_POST_TIMEOUT,
+        )
+
         if response.status_code not in (200, 201):
-            # 1204 表示资源已存在
             if response.status_code == 400:
-                error = response.json()
+                try:
+                    error = response.json()
+                except Exception:
+                    error = {}
                 if error.get("code") == 1204:
-                    return True  # 已存在也算成功
+                    # 资源已存在（例如与 sync 竞态）；视为成功，完整更新应使用 sync_file
+                    return True
             raise Exception(f"PKB 创建失败: {response.status_code} - {response.text}")
-        
+
         return True
     
     def delete_resource(self, resource_name: str) -> bool:
@@ -330,8 +424,10 @@ class PKBAPI:
         
         # 删除资源 - 使用 POST 带 resource_ids
         url = f"{self.base_url}/api/v1/tct-knowledge-base/resources"
-        response = self.session.delete(url, json={"resource_ids": resource_ids})
-        
+        response = self.session.delete(
+            url, json={"resource_ids": resource_ids}, timeout=_HTTP_TIMEOUT
+        )
+
         if response.status_code not in (200, 204):
             raise Exception(f"删除失败: {response.status_code} - {response.text}")
         
@@ -417,9 +513,13 @@ class PKBAPI:
         url = f"{self.base_url}/api/v1/tct-knowledge-base/resources"
         params = {"page": page, "size": size}
         
-        response = self.session.get(url, params=params)
-        response.raise_for_status()
-        
+        response = self.session.get(url, params=params, timeout=_HTTP_TIMEOUT)
+        if not response.ok:
+            body = (response.text or "")[:2000]
+            raise Exception(
+                f"PKB list_resources 失败: HTTP {response.status_code} url={url} params={params} body={body}"
+            )
+
         data = response.json()
         
         resources = []

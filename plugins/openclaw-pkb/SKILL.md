@@ -58,7 +58,15 @@ PKB_USER_ID=your_user_id
 NEXTCLOUD_BASE_URL=https://nextcloud.kmchat.cloud
 NEXTCLOUD_USERNAME=your_username
 NEXTCLOUD_APP_PASSWORD=your_app_password
+
+# FileSaaS（与 PKB 登录不同：字节先上传 FileSaaS，再凭 file_key 登记 PKB）
+FILESAAS_APP_ID=tct-pkb-api
+FILESAAS_APP_SECRET=你的密钥
+FILESAAS_TENANT=tct-pkb
+FILESAAS_SERVER=上传服务主机名不含协议
 ```
+
+若插件根目录已有 `config.json` 的 `fileSaaS`（含 `tenantId` / `uploadServer` 亦可），通常不必在 `.env` 重复。也可在 `~/.openclaw/openclaw.json` 的 `plugins.entries.pkb.config.fileSaaS` 中设置并由插件注入（别名 `tenantId` / `uploadServer` 与 `tenant` / `server` 等价）。
 
 或设置环境变量：
 ```bash

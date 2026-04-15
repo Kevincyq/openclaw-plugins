@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-OpenClaw 插件入口：从 argv 读取 JSON，向 stdout 输出单行 JSON。
-stderr 可用于日志，避免污染 JSON。
+Nextcloud 插件桥接层（被 index.ts spawn）
+
+约定同 pkb：argv[1] 为 JSON；stdout 单行 JSON；失败时 exit 1 且 stdout 含 {"ok":false,"error":...}。
+
+action 与 TS 侧 basePayload 第二个参数对应：
+  upload | download | write_text | list | share | delete
+
+底层：NextcloudAPI（api.py）→ WebDAV（/remote.php/dav/files/用户/路径）与 OCS 分享 API。
+remotePath 使用 Unicode 未编码串，由 api 内 quote 再拼 URL。
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ from api import NextcloudAPI  # noqa: E402
 
 
 def _run_with_prints_to_stderr(fn):
+    """将 api 内 print 转到 stderr，保证 stdout 仅一行 JSON。"""
     buf = StringIO()
     with redirect_stdout(buf):
         out = fn()
@@ -51,6 +59,7 @@ def main() -> int:
     api = NextcloudAPI(base_url, username, app_password)
 
     try:
+        # ---- WebDAV 文件体 / 文本 ----
         if action == "upload":
             local_path = payload.get("localPath", "")
             remote_path = payload.get("remotePath", "")
@@ -72,6 +81,7 @@ def main() -> int:
             print(json.dumps({"ok": True, "result": result}))
             return 0
 
+        # ---- PROPFIND 列目录；OCS 分享（公开链接）----
         if action == "list":
             path = payload.get("path") or "/"
             files = api.list_files(path)
@@ -85,6 +95,7 @@ def main() -> int:
             print(json.dumps({"ok": True, "result": {"url": url}}))
             return 0
 
+        # ---- DELETE 删云端文件 ----
         if action == "delete":
             remote_path = payload.get("remotePath", "")
             result = _run_with_prints_to_stderr(lambda: api.delete_file(remote_path))

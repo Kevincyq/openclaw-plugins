@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """
-OpenClaw PKB 插件桥接层：从 argv 读取 JSON，向 stdout 输出单行 JSON。
+OpenClaw PKB 插件桥接层（被 index.ts spawn）
+
+约定：
+  - argv[1]：单行 JSON，含 action / baseUrl / apiKey / userId 及各工具专有字段；
+  - 成功：stdout 仅一行 {"ok": true, "result": ...}，进程退出码 0；
+  - 失败：stdout 一行 {"ok": false, "error": "..."}，退出码 1（Node 侧 runBridge 会解析该 JSON）。
+
+action 与 TS 侧 basePayload("...") 对应：
+  ask | upload_file | upload_text | delete_resource | list_resources | wait_resource
+
+实现细节见同目录 api.PKBAPI；上传类动作内部走 sync_file（先删 PKB 同名索引再传），避免重复资源不更新。
 """
 
 from __future__ import annotations
@@ -20,6 +30,7 @@ from api import PKBAPI  # noqa: E402
 
 
 def _run_with_prints_to_stderr(fn):
+    """避免 api 内 print 污染 stdout（stdout 必须只剩单行 JSON）。"""
     buf = StringIO()
     with redirect_stdout(buf):
         out = fn()
@@ -54,6 +65,7 @@ def main() -> int:
         user_id = _require_str(payload, "userId")
         api = PKBAPI(base_url, api_key, user_id)
 
+        # ---------- 问答（流式 SSE，结果里含 citations → sources）----------
         if action == "ask":
             question = _require_str(payload, "question")
             session_id = str(payload.get("sessionId", "") or "").strip() or None
@@ -61,12 +73,14 @@ def main() -> int:
             print(json.dumps({"ok": True, "result": result}))
             return 0
 
+        # ---------- 本地文件 / 文本 → PKB 索引（经 FileSaaS + PKB API，见 api.upload_resource）----------
         if action == "upload_file":
             local_path = _require_str(payload, "localPath")
             resource_name = _require_str(payload, "resourceName")
             source_url = str(payload.get("sourceUrl", "") or "")
+            # 使用 sync：若 PKB 中已有同名资源则先删再传，避免「仅 Nextcloud 更新、索引仍旧」
             _run_with_prints_to_stderr(
-                lambda: api.upload_resource(local_path, resource_name, source_url=source_url)
+                lambda: api.sync_file(local_path, resource_name, source_url=source_url)
             )
             print(
                 json.dumps(
@@ -93,7 +107,7 @@ def main() -> int:
                     fp.write(text)
                     temp_path = fp.name
                 _run_with_prints_to_stderr(
-                    lambda: api.upload_resource(temp_path, resource_name, source_url=source_url)
+                    lambda: api.sync_file(temp_path, resource_name, source_url=source_url)
                 )
             finally:
                 if temp_path:
@@ -112,6 +126,7 @@ def main() -> int:
             )
             return 0
 
+        # ---------- 删除 / 列表 / 轮询就绪（配合 file-ingest-pipeline 第 5 步）----------
         if action == "delete_resource":
             resource_name = _require_str(payload, "resourceName")
             _run_with_prints_to_stderr(lambda: api.delete_resource(resource_name))

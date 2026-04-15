@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-PKB 知识库管理 CLI
+PKB 命令行工具（不经过 OpenClaw Node 插件）
+
+与插件的关系：共用 api.PKBAPI / config.PKBConfig；适合本机调试、手动 sync/ask。
+插件入口请看 openclaw_bridge.py + 上级 index.ts。
+
 用法:
     python -m scripts.main <command> [args]
 """
